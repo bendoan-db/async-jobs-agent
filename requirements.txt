@@ -1,0 +1,4 @@
+databricks-langchain[memory] 
+uv 
+databricks-agents 
+mlflow-skinny[databricks]
