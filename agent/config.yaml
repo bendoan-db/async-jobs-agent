@@ -1,6 +1,18 @@
 # MLflow configuration
 mlflow_experiment_id: "3842491608466323"  # Replace with your MLflow experiment ID
 
+# Unity Catalog model registration
+unity_catalog:
+  catalog: "main"           # Unity Catalog name
+  schema: "agents"          # Schema name
+  model_name: "langgraph_supervisor"  # Model name
+
+# Model Serving deployment
+model_serving:
+  endpoint_name: "langgraph-supervisor"  # Serving endpoint name (defaults to model_name with hyphens)
+  workload_size: "Small"    # Small, Medium, or Large
+  scale_to_zero: true       # Enable scale-to-zero
+
 llm_endpoint_name: "databricks-claude-sonnet-4-5"
 system_prompt: |
   You are a helpful assistant. Use the available tools to answer questions.

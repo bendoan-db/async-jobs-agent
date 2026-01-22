@@ -1,0 +1,34 @@
+resources:
+  jobs:
+    async_job:
+      name: async_job
+
+      # Serverless environment configuration
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "3"
+            dependencies:
+              - psycopg2-binary
+              - databricks-sdk>=0.61.0
+
+      tasks:
+        - task_key: task_1
+          environment_key: serverless_env
+          spark_python_task:
+            python_file: ../src/task_1.py
+            parameters:
+              - "--lakebase-instance"
+              - "${var.lakebase_instance}"
+
+        - task_key: task_2
+          environment_key: serverless_env
+          depends_on:
+            - task_key: task_1
+          spark_python_task:
+            python_file: ../src/task_2.py
+            parameters:
+              - "--lakebase-instance"
+              - "${var.lakebase_instance}"
+
+      max_concurrent_runs: 1
