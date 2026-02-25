@@ -3,6 +3,11 @@ resources:
     async_job:
       name: async_job
 
+      # Job-level parameters (passed at runtime via jobs.run_now)
+      parameters:
+        - name: user_request
+          default: ""
+
       # Serverless environment configuration
       environments:
         - environment_key: serverless_env
@@ -11,24 +16,20 @@ resources:
             dependencies:
               - psycopg2-binary
               - databricks-sdk>=0.61.0
+              - databricks-langchain[memory]
+              - databricks-agents
+              - mlflow-skinny[databricks]
+              - pyyaml
 
       tasks:
-        - task_key: task_1
+        - task_key: agent_workflow_task
           environment_key: serverless_env
           spark_python_task:
-            python_file: ../src/task_1.py
+            python_file: ../src/agent_workflow_task.py
             parameters:
               - "--lakebase-instance"
               - "${var.lakebase_instance}"
+              - "--user-request"
+              - "{{job.parameters.user_request}}"
 
-        - task_key: task_2
-          environment_key: serverless_env
-          depends_on:
-            - task_key: task_1
-          spark_python_task:
-            python_file: ../src/task_2.py
-            parameters:
-              - "--lakebase-instance"
-              - "${var.lakebase_instance}"
-
-      max_concurrent_runs: 1
+      max_concurrent_runs: 10

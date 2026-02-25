@@ -1,26 +1,39 @@
 """
-Task 1: Print message and log to Lakebase
+Lakebase utilities for async job tasks.
 
-This task prints "task 1 done" and logs the message to Lakebase for persistence.
+This module provides shared functions for connecting to and
+logging data to Databricks Lakebase.
 """
 
-import argparse
 import uuid
 from datetime import datetime, timezone
 
 import psycopg2
 from databricks.sdk import WorkspaceClient
 
+try:
+    from .schema import ensure_task_logs_table_exists
+except ImportError:
+    from schema import ensure_task_logs_table_exists
+
 
 def get_lakebase_connection(instance_name: str):
     """
-    Create a connection to Lakebase instance.
+    Create a connection to a Lakebase instance.
 
     Args:
         instance_name: Name of the Lakebase instance
 
     Returns:
         psycopg2 connection object
+
+    Example:
+        conn = get_lakebase_connection("my-lakebase-instance")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM my_table")
+        finally:
+            conn.close()
     """
     w = WorkspaceClient()
 
@@ -49,35 +62,37 @@ def get_lakebase_connection(instance_name: str):
     return conn
 
 
-def ensure_log_table_exists(conn) -> None:
-    """Create the task_logs table if it doesn't exist."""
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS task_logs (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                task_name VARCHAR(255) NOT NULL,
-                message TEXT NOT NULL,
-                timestamp TIMESTAMPTZ NOT NULL,
-                status VARCHAR(50) NOT NULL
-            )
-        """)
-    conn.commit()
-
-
-def log_to_lakebase(instance_name: str, message: str, task_name: str) -> None:
+def log_to_lakebase(
+    instance_name: str,
+    task_name: str,
+    message: str,
+    status: str = "completed"
+) -> None:
     """
-    Log a message to Lakebase.
+    Log a message to Lakebase task_logs table.
+
+    This function creates the task_logs table if it doesn't exist
+    and inserts a log entry with the provided information.
 
     Args:
         instance_name: Name of the Lakebase instance
-        message: Message to log
         task_name: Name of the task for identification
+        message: Message to log
+        status: Status of the task (default: "completed")
+
+    Example:
+        log_to_lakebase(
+            instance_name="my-lakebase",
+            task_name="task_1",
+            message="Processing complete",
+            status="completed"
+        )
     """
     conn = get_lakebase_connection(instance_name)
 
     try:
         # Ensure table exists
-        ensure_log_table_exists(conn)
+        ensure_task_logs_table_exists(conn)
 
         # Insert log entry
         timestamp = datetime.now(timezone.utc)
@@ -88,7 +103,7 @@ def log_to_lakebase(instance_name: str, message: str, task_name: str) -> None:
                 INSERT INTO task_logs (task_name, message, timestamp, status)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (task_name, message, timestamp, "completed")
+                (task_name, message, timestamp, status)
             )
         conn.commit()
 
@@ -96,30 +111,3 @@ def log_to_lakebase(instance_name: str, message: str, task_name: str) -> None:
 
     finally:
         conn.close()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Task 1")
-    parser.add_argument(
-        "--lakebase-instance",
-        required=True,
-        help="Lakebase instance name for logging",
-    )
-    args = parser.parse_args()
-
-    # Print the message
-    message = "task 1 done"
-    print(message)
-
-    # Log to Lakebase
-    log_to_lakebase(
-        instance_name=args.lakebase_instance,
-        message=message,
-        task_name="task_1",
-    )
-
-    print("Task 1 completed successfully!")
-
-
-if __name__ == "__main__":
-    main()
