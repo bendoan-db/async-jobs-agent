@@ -58,7 +58,7 @@ def create_start_job_tool(job_id: str) -> StructuredTool:
         """
         client = get_workspace_client()
 
-        # Build parameters - always include user_request
+        # Build job-level parameters
         params = {"user_request": user_request}
         if notebook_params:
             params.update(notebook_params)
@@ -67,7 +67,7 @@ def create_start_job_tool(job_id: str) -> StructuredTool:
             logger.info("Starting Databricks job %s", job_id)
             run = client.jobs.run_now(
                 job_id=int(job_id),
-                notebook_params=params,
+                job_parameters=params,
             )
             logger.info("Job %s started with run_id %s", job_id, run.run_id)
 

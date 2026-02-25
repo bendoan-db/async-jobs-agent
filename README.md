@@ -1,6 +1,9 @@
 # Async Databricks Workflow Agent
 
-A LangGraph-based supervisor agent that runs on Databricks, featuring asynchronous job execution, Genie integration for natural language data queries, and conversation state persistence via Lakebase.
+Demonstrates asynchronous inference using Databricks workflows with two independent agents:
+
+- **Primary agent** (`agent/`) — deployed on Model Serving, triages requests and delegates data questions to an async Databricks workflow
+- **Workflow task agent** (`async_job/src/`) — self-contained LangGraph agent with Genie tools, runs inside a Databricks job task, logs intermediate steps and results to Lakebase
 
 ## Architecture
 
@@ -10,7 +13,7 @@ flowchart TB
         U[User Request]
     end
 
-    subgraph Agent["LangGraph Agent"]
+    subgraph Primary["Primary Agent (Model Serving)"]
         direction TB
         A[Agent Node] --> SC{Should Continue?}
         SC -->|Tool Calls| T[Tools Node]
@@ -18,82 +21,112 @@ flowchart TB
         T --> A
     end
 
-    subgraph Tools["Available Tools"]
+    subgraph PrimaryTools["Primary Agent Tools"]
+        SJ[start_databricks_job]
+        PJ[poll_databricks_job]
+        TJ[terminate_databricks_job]
+    end
+
+    subgraph Workflow["Async Databricks Workflow"]
         direction TB
+        WT["agent_workflow_task<br/>(standalone agent + Genie)"]
+    end
+
+    subgraph WorkflowTools["Workflow Agent Tools"]
         G[query_genie<br/>Natural Language Data Queries]
-        SJ[start_databricks_job<br/>Kick off async workflow]
-        PJ[poll_databricks_job<br/>Check job status]
-        TJ[terminate_databricks_job<br/>Cancel running job]
     end
 
     subgraph Databricks["Databricks Platform"]
         direction TB
         GS[Genie Space<br/>Structured Data]
-        JOB[Databricks Job<br/>Long-running Task]
-        LB[Lakebase<br/>Conversation State]
+        LB[Lakebase<br/>State & Step Logs]
         LLM[Claude LLM Endpoint]
     end
 
     U --> A
     A <-->|LLM Calls| LLM
-    T --> G
-    T --> SJ
-    T --> PJ
-    T --> TJ
+    T --> SJ & PJ & TJ
+    SJ -->|Run Now| WT
+    PJ -.->|Get Status| WT
+    TJ -.->|Cancel| WT
+    WT <-->|LLM Calls| LLM
+    WT --> G
     G <-->|Query| GS
-    SJ -->|Run Now| JOB
-    PJ -->|Get Status| JOB
-    TJ -->|Cancel| JOB
+    WT -->|Log steps & result| LB
     A <-->|Checkpoint| LB
 
     style SJ fill:#f9a825
-    style JOB fill:#f9a825
+    style WT fill:#f9a825
+    style G fill:#66bb6a
 ```
 
-### Workflow Description
+### How It Works
 
-1. **User Request**: User sends a message to the agent
-2. **Agent Processing**: The LangGraph agent processes the request using Claude LLM
-3. **Tool Selection**: Agent decides which tool(s) to use based on the request:
-   - **Genie**: For data queries against structured data
-   - **Start Job**: For complex, long-running tasks
-   - **Poll Job**: When user asks about job status
-   - **Terminate Job**: When user wants to cancel a job
-4. **Async Job Handling**: When `start_databricks_job` is called:
-   - Job is kicked off with user's request as parameter
-   - Agent immediately returns the `run_id` to the user
-   - Graph exits (does not poll automatically)
-   - User can check status later with a follow-up request
-5. **State Persistence**: Conversation state is checkpointed to Lakebase for multi-turn conversations
+1. **User Request** arrives at the primary agent (deployed on Model Serving)
+2. **Triage**: The primary agent decides how to handle the request:
+   - **Simple questions** (greetings, clarifications) — answered directly
+   - **Data/research questions** — delegated via `start_databricks_job`
+3. **Async Delegation**: When a job is started:
+   - The user's request is passed as a job parameter
+   - The primary agent immediately returns the `run_id` and exits
+   - The Databricks workflow launches `agent_workflow_task`
+4. **Workflow Task Agent**: A self-contained LangGraph agent (no dependency on `agent/`) with Genie tools:
+   - Calls `query_genie` to answer data questions
+   - Logs each tool call and tool result to Lakebase as intermediate steps
+   - Logs the final response to Lakebase on completion
+5. **Follow-up**: The user can poll job status or cancel via the primary agent
 
 ## Project Structure
 
 ```
 async-databricks-workflow/
-├── agent/
-│   ├── agent.py              # Main agent implementation (LangGraphResponsesAgent)
-│   ├── config.yaml           # All configuration (LLM, Genie, Job settings)
-│   ├── utils/
+├── agent/                         # Primary agent (Model Serving)
+│   ├── agent.py                   # LangGraphResponsesAgent — job tools only
+│   ├── config.yaml                # LLM, job, Lakebase, deployment settings
+│   ├── config_loader.py           # Cached config accessors
+│   ├── tools/
 │   │   ├── __init__.py
-│   │   ├── databricks_client.py   # Singleton WorkspaceClient
-│   │   └── tool_responses.py      # Standardized response helpers
-│   └── workflow_tools/
+│   │   └── job_tools.py           # start/poll/terminate Databricks jobs
+│   └── utils/
 │       ├── __init__.py
-│       ├── job_tools.py      # Databricks job management tools
-│       └── genie_tools.py    # Genie natural language query tool
-├── main.py                   # Local development entry point
-├── requirements.txt          # Python dependencies
-└── .env                      # Environment variables (not in git)
+│       ├── databricks_client.py   # Singleton WorkspaceClient
+│       ├── environment.py         # Env var validation
+│       ├── mlflow_utils.py        # MLflow tracking/registry setup
+│       └── tool_responses.py      # Standardized response helpers
+├── async_job/                     # Workflow task agent (DAB)
+│   ├── resources/
+│   │   └── async_job.job.yml      # Job definition
+│   └── src/
+│       ├── __init__.py
+│       ├── agent_workflow_task.py  # Standalone LangGraph agent with Genie
+│       ├── genie_tools.py         # Genie tool (self-contained)
+│       ├── lakebase_utils.py      # Lakebase connection and logging
+│       └── schema.py              # task_logs table schema
+├── databricks.yml                 # Root DAB config (deploys full project)
+├── main.py                        # Local development entry point
+├── requirements.txt               # Python dependencies
+└── .env                           # Environment variables (not in git)
 ```
+
+### Two Independent Agents
+
+The agents are **completely separate** — the workflow task agent has zero imports from `agent/`.
+
+| | Primary Agent (`agent/`) | Workflow Task Agent (`async_job/src/`) |
+|---|---|---|
+| **Tools** | `start/poll/terminate_databricks_job` | `query_genie` |
+| **Runs on** | Model Serving | Databricks workflow task (serverless) |
+| **Config source** | `agent/config.yaml` | CLI args + env vars + defaults |
+| **State** | Lakebase checkpointing (multi-turn) | Logs steps to Lakebase `task_logs` |
+| **LLM** | `databricks-claude-sonnet-4-5` | `databricks-claude-sonnet-4-5` |
 
 ## Prerequisites
 
 - Python 3.10+
 - Databricks workspace with:
   - Model Serving endpoint (Claude LLM)
-  - Lakebase instance for checkpointing
-  - Genie Space (optional, for data queries)
-  - Databricks Job configured (for async workflows)
+  - Lakebase instance for checkpointing and step logging
+  - Genie Space for data queries
 
 ## Installation
 
@@ -106,7 +139,7 @@ async-databricks-workflow/
 2. **Create virtual environment**
    ```bash
    python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   source .venv/bin/activate
    ```
 
 3. **Install dependencies**
@@ -122,144 +155,72 @@ async-databricks-workflow/
    DATABRICKS_TOKEN=<your-personal-access-token>
    ```
 
-5. **Configure the agent**
+5. **Configure the primary agent**
 
-   Edit `agent/config.yaml` with your settings:
+   Edit `agent/config.yaml`:
    ```yaml
-   # MLflow configuration
    mlflow_experiment_id: "<your-experiment-id>"
-
-   # LLM endpoint
    llm_endpoint_name: "databricks-claude-sonnet-4-5"
-
-   # Lakebase instance for conversation state
    lakebase_instance_name: "<your-lakebase-instance>"
-
-   # Databricks job for async workflows
-   databricks_job_id: "<your-job-id>"
-
-   # Genie configuration (optional)
-   genie:
-     space_id: "<your-genie-space-id>"
-     agent_name: "Genie"
-     description: "Description of what data Genie can query"
+   databricks_job_id: "<your-job-id>"  # Set after deploying the DAB
    ```
 
-## Running the Agent
+6. **Configure the workflow task agent**
 
-### Local Development
+   Defaults are set in `async_job/src/agent_workflow_task.py` via env vars:
+   - `LLM_ENDPOINT_NAME` — LLM endpoint (default: `databricks-claude-sonnet-4-5`)
+   - `GENIE_SPACE_ID` — Genie space ID
+   - `GENIE_DESCRIPTION` — Genie tool description
+
+   The Lakebase instance is passed via the DAB variable `lakebase_instance` (defined in `databricks.yml`).
+
+## Deployment
+
+### 1. Deploy the Async Job (DAB)
+
+Deploy from the project root (the `databricks.yml` is at the root so both `agent/` and `async_job/` are included):
 
 ```bash
-python main.py
+databricks bundle deploy --target dev
+
+# Get the job ID from the output or list jobs
+databricks jobs list --name async_job
 ```
 
-This runs the agent with example inputs defined in `main.py`.
+Update `databricks_job_id` in `agent/config.yaml` with the job ID from the output.
 
-### Deploying to Databricks
+To redeploy after code changes:
 
-The agent is designed to be deployed as an MLflow model on Databricks Model Serving:
-
-```python
-import mlflow
-
-# Register the model
-mlflow.set_registry_uri("databricks-uc")
-with mlflow.start_run():
-    logged_agent = mlflow.pyfunc.log_model(
-        name="agent",
-        python_model="agent/agent.py",
-        pip_requirements=["databricks-langchain", "langgraph", "mlflow"]
-    )
-
-# Register to Unity Catalog
-mlflow.register_model(
-    model_uri=logged_agent.model_uri,
-    name="<catalog>.<schema>.<model_name>"
-)
-
-# Deploy
-from databricks import agents
-agents.deploy("<catalog>.<schema>.<model_name>", version="1")
+```bash
+databricks bundle deploy --target dev
 ```
 
-## Tools Reference
+### 2. Deploy the Primary Agent to Model Serving
 
-### query_genie
-Query structured data using natural language through Databricks Genie.
-
-**Parameters:**
-- `query` (str): Natural language question about the data
-
-**Example:**
-```
-User: "What was our total revenue last quarter?"
-Agent: [Uses query_genie to get data from Genie Space]
+```bash
+python main.py  # Local test first
 ```
 
-### start_databricks_job
-Kick off a long-running Databricks job with the user's request.
+## Intermediate Step Logging
 
-**Parameters:**
-- `user_request` (str): The user's request to pass to the job
-- `notebook_params` (dict, optional): Additional parameters for the notebook
+The workflow task agent logs each step to the `task_logs` table in Lakebase:
 
-**Behavior:** After starting, the agent returns immediately with the `run_id`. It does NOT poll for completion automatically.
+| status | description |
+|--------|-------------|
+| `tool_call` | Agent decided to call a tool (includes tool name and arguments) |
+| `tool_result` | Tool returned a result (includes output) |
+| `completed` | Final agent response text |
 
-**Example:**
-```
-User: "Analyze all customer transactions for anomalies"
-Agent: "Job started successfully. Run ID: 12345. You can check the status later."
-```
-
-### poll_databricks_job
-Check the status of a previously started job.
-
-**Parameters:**
-- `run_id` (str): The run ID from start_databricks_job
-
-**Example:**
-```
-User: "What's the status of job 12345?"
-Agent: [Uses poll_databricks_job] "Job is still running..."
-```
-
-### terminate_databricks_job
-Cancel a running job.
-
-**Parameters:**
-- `run_id` (str): The run ID to cancel
-
-**Example:**
-```
-User: "Cancel job 12345"
-Agent: [Uses terminate_databricks_job] "Job cancelled successfully."
-```
-
-## Configuration Reference
-
-| Parameter | Description |
-|-----------|-------------|
-| `mlflow_experiment_id` | MLflow experiment for tracking |
-| `llm_endpoint_name` | Databricks Model Serving endpoint for Claude |
-| `system_prompt` | System prompt for the agent |
-| `lakebase_instance_name` | Lakebase instance for conversation checkpointing |
-| `databricks_job_id` | Job ID for async workflow execution |
-| `genie.space_id` | Genie Space ID for data queries |
-| `genie.agent_name` | Display name for Genie agent |
-| `genie.description` | Description of Genie capabilities |
+Each log entry includes a `step` number, timestamp, and the full message payload as JSON. This allows monitoring agent progress while the async job is running.
 
 ## Multi-turn Conversations
 
-The agent supports multi-turn conversations via Lakebase checkpointing. Thread IDs are managed automatically:
-
-1. First request: Agent generates a new `thread_id`
-2. Response includes `thread_id` in `custom_outputs`
-3. Subsequent requests: Pass `thread_id` in `custom_inputs` to continue the conversation
+The primary agent supports multi-turn conversations via Lakebase checkpointing:
 
 ```python
 # First request
 response = AGENT.predict({
-    "input": [{"role": "user", "content": "Start job for data analysis"}],
+    "input": [{"role": "user", "content": "Analyze customer revenue trends"}],
     "custom_inputs": {}
 })
 
@@ -271,6 +232,32 @@ response = AGENT.predict({
     "custom_inputs": {"thread_id": thread_id}
 })
 ```
+
+## Configuration Reference
+
+### Primary Agent (`agent/config.yaml`)
+
+| Parameter | Description |
+|-----------|-------------|
+| `mlflow_experiment_id` | MLflow experiment for tracking |
+| `llm_endpoint_name` | Databricks Model Serving endpoint for Claude |
+| `system_prompt` | System prompt for the primary agent |
+| `lakebase_instance_name` | Lakebase instance for conversation checkpointing |
+| `databricks_job_id` | Job ID for async workflow execution |
+
+### Workflow Task Agent (DAB variables in `databricks.yml`)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `lakebase_instance` | Lakebase instance for step logging | `doan-langgraph-memory` |
+
+### Workflow Task Agent (env vars / defaults in `agent_workflow_task.py`)
+
+| Env Var | Description | Default |
+|---------|-------------|---------|
+| `LLM_ENDPOINT_NAME` | LLM endpoint | `databricks-claude-sonnet-4-5` |
+| `GENIE_SPACE_ID` | Genie Space ID | (hardcoded) |
+| `GENIE_DESCRIPTION` | Genie tool description | (hardcoded) |
 
 ## License
 

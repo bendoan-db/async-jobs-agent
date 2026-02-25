@@ -1,11 +1,9 @@
 import logging
 import os
 import uuid
-from pathlib import Path
 from typing import Annotated, Any, Generator, Optional, Sequence, TypedDict
 
 import mlflow
-import yaml
 from databricks_langchain import (
     ChatDatabricks,
     UCFunctionToolkit,
@@ -24,61 +22,40 @@ from mlflow.types.responses import (
     output_to_responses_items_stream,
 )
 
-from agent.workflow_tools import create_job_tools, create_genie_tool
+from agent.config_loader import (
+    get_llm_endpoint_name,
+    get_system_prompt,
+    get_lakebase_instance_name,
+    get_databricks_job_id,
+)
+from agent.tools import create_job_tools
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 ############################################
-# Load configuration from YAML
+# Load configuration
 ############################################
-def load_config() -> dict[str, Any]:
-    config_path = Path(__file__).parent / "config.yaml"
-    with open(config_path) as f:
-        return yaml.safe_load(f)
-
-_config = load_config()
-LLM_ENDPOINT_NAME = _config["llm_endpoint_name"]
-SYSTEM_PROMPT = _config["system_prompt"]
-LAKEBASE_INSTANCE_NAME = _config["lakebase_instance_name"]
-DATABRICKS_JOB_ID = _config["databricks_job_id"]
-
-# Genie configuration
-GENIE_CONFIG = _config.get("genie", {})
-GENIE_SPACE_ID = GENIE_CONFIG.get("space_id")
-GENIE_AGENT_NAME = GENIE_CONFIG.get("agent_name", "Genie")
-GENIE_DESCRIPTION = GENIE_CONFIG.get("description")
+LLM_ENDPOINT_NAME = get_llm_endpoint_name()
+SYSTEM_PROMPT = get_system_prompt()
+LAKEBASE_INSTANCE_NAME = get_lakebase_instance_name()
+DATABRICKS_JOB_ID = get_databricks_job_id()
 
 ###############################################################################
-## Define tools for your agent,enabling it to retrieve data or take actions
-## beyond text generation
-## To create and see usage examples of more tools, see
-## https://docs.databricks.com/en/generative-ai/agent-framework/agent-tool.html
+## Define tools — primary agent only has workflow job tools
 ###############################################################################
-tools = []
 
-# Example UC tools; add your own as needed
 UC_TOOL_NAMES: list[str] = []
+VECTOR_SEARCH_TOOLS = []
+
+tools: list = []
+
 if UC_TOOL_NAMES:
     uc_toolkit = UCFunctionToolkit(function_names=UC_TOOL_NAMES)
     tools.extend(uc_toolkit.tools)
 
-VECTOR_SEARCH_TOOLS = []
-
-
 tools.extend(VECTOR_SEARCH_TOOLS)
-
-# Add Databricks job management tools (configured with job_id from config)
 tools.extend(create_job_tools(DATABRICKS_JOB_ID))
-
-# Add Genie tool if configured
-if GENIE_SPACE_ID:
-    genie_tool = create_genie_tool(
-        space_id=GENIE_SPACE_ID,
-        agent_name=GENIE_AGENT_NAME,
-        description=GENIE_DESCRIPTION,
-    )
-    tools.append(genie_tool)
 
 #####################
 ## Define agent logic
@@ -94,9 +71,10 @@ class LangGraphResponsesAgent(ResponsesAgent):
     """Stateful agent using ResponsesAgent with pooled Lakebase checkpointing."""
 
     def __init__(self, _lakebase_config: dict[str, Any]):
+        self.tools = tools
         self.model = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
         self.system_prompt = SYSTEM_PROMPT
-        self.model_with_tools = self.model.bind_tools(tools) if tools else self.model
+        self.model_with_tools = self.model.bind_tools(self.tools) if self.tools else self.model
 
     def _create_graph(self, checkpointer: Any):
         def should_continue(state: AgentState):
@@ -127,7 +105,7 @@ class LangGraphResponsesAgent(ResponsesAgent):
             return {"messages": [response]}
 
         # Wrap ToolNode to detect when start_databricks_job is called
-        tool_node = ToolNode(tools)
+        tool_node = ToolNode(self.tools)
 
         def call_tools(state: AgentState, config: RunnableConfig):
             """Execute tools and check if start_databricks_job was called."""
@@ -153,7 +131,7 @@ class LangGraphResponsesAgent(ResponsesAgent):
         workflow = StateGraph(AgentState)
         workflow.add_node("agent", RunnableLambda(call_model))
 
-        if tools:
+        if self.tools:
             workflow.add_node("tools", call_tools)
             workflow.add_conditional_edges("agent", should_continue, {"continue": "tools", "end": END})
             workflow.add_edge("tools", "agent")

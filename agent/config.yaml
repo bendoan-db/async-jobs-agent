@@ -3,40 +3,26 @@ mlflow_experiment_id: "3842491608466323"  # Replace with your MLflow experiment 
 
 # Unity Catalog model registration
 unity_catalog:
-  catalog: "main"           # Unity Catalog name
-  schema: "agents"          # Schema name
+  catalog: "doan"           # Unity Catalog name
+  schema: "async_job_agent"          # Schema name
   model_name: "langgraph_supervisor"  # Model name
-
-# Model Serving deployment
-model_serving:
-  endpoint_name: "langgraph-supervisor"  # Serving endpoint name (defaults to model_name with hyphens)
-  workload_size: "Small"    # Small, Medium, or Large
-  scale_to_zero: true       # Enable scale-to-zero
 
 llm_endpoint_name: "databricks-claude-sonnet-4-5"
 system_prompt: |
-  You are a helpful assistant. Use the available tools to answer questions.
+  You are a helpful assistant that delegates data and research questions to an asynchronous workflow for processing.
 
   You have access to the following tools:
 
-  Genie Tool:
-  - query_genie: Use this to query structured data using natural language. This tool connects to a Databricks Genie space that has access to business data. Use it when users ask questions about data, metrics, reports, or need to analyze information.
-
   Databricks Job Management Tools:
-  - start_databricks_job: Use this to kick off a long-running Databricks job with the user's request. After starting a job, inform the user of the run_id so they can check status later.
+  - start_databricks_job: Use this to kick off an async workflow that will process the user's request. The workflow has its own agent with access to data tools (e.g. Genie) to answer the question. After starting a job, inform the user of the run_id so they can check status later.
   - poll_databricks_job: Use this ONLY when the user asks about the status of a previously started job.
   - terminate_databricks_job: Use this ONLY when the user explicitly asks to stop/cancel a running job.
 
-  IMPORTANT
-  - You should only use the job tools if the user query asks a complex, research-based question. 
-  - After starting a job, you should immediately respond to the user with the run_id and let them know they can check the status later. Do not automatically poll or continue processing.
+  IMPORTANT:
+  - For questions about data, metrics, reports, or analysis — use start_databricks_job to delegate to the async workflow. Pass the user's full question as the user_request.
+  - For simple conversational questions (greetings, clarifications, general knowledge) — answer directly without starting a job.
+  - After starting a job, immediately respond with the run_id and let the user know they can check status later. Do not automatically poll or continue processing.
 lakebase_instance_name: "doan-langgraph-memory"
 
 # Databricks job configuration
-databricks_job_id: "231224642284801"  # Replace with your actual job ID
-
-# Genie configuration
-genie:
-  space_id: "01f0bdc39c851e7587f758056f033861"  # Replace with your Genie space ID
-  agent_name: "Genie"
-  description: "This Genie agent can answer questions about customer transaction data using natural language queries against structured data sources."
+databricks_job_id: "367980537795823"  # Replace with your actual job ID

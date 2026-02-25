@@ -1,0 +1,34 @@
+bundle:
+  name: async-databricks-workflow
+
+variables:
+  catalog:
+    description: Unity Catalog name
+    default: main
+  schema:
+    description: Schema name for tables
+    default: async_job
+  lakebase_instance:
+    description: Lakebase instance name for logging
+    default: doan-langgraph-memory
+
+include:
+  - async_job/resources/*.yml
+
+sync:
+  exclude:
+    - .env
+    - .venv/
+    - __pycache__/
+    - "*.pyc"
+    - databricks_app/
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://fe-vm-vdm-classic-hkbucz.cloud.databricks.com
+
+  prod:
+    mode: production
