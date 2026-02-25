@@ -52,9 +52,12 @@ GENIE_DESCRIPTION = os.getenv(
 )
 
 SYSTEM_PROMPT = """\
-You are a data analyst assistant. Use the query_genie tool to answer questions \
-about data, metrics, and reports. Provide clear, concise answers based on the \
-data returned.\
+You are a data analyst assistant. Use the query_genie tool to answer the user's question.
+
+After receiving the raw data from Genie, you MUST summarize the results into a \
+clear, natural language response. Do not return raw data or tables directly. \
+Instead, interpret the data and provide key insights, trends, and a direct \
+answer to the user's question in plain language.\
 """
 
 
