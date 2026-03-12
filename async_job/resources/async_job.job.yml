@@ -12,7 +12,7 @@ resources:
       environments:
         - environment_key: serverless_env
           spec:
-            client: "3"
+            environment_version: "3"
             dependencies:
               - psycopg2-binary
               - databricks-sdk>=0.61.0
@@ -25,7 +25,7 @@ resources:
         - task_key: agent_workflow_task
           environment_key: serverless_env
           spark_python_task:
-            python_file: ../src/agent_workflow_task.py
+            python_file: async_job/src/agent_workflow_task.py
             parameters:
               - "--lakebase-instance"
               - "${var.lakebase_instance}"
